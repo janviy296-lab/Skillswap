@@ -54,43 +54,54 @@ function Chat() {
   }, [partnerId]);
 
   useEffect(() => {
-    if (!currentUser?._id || !partnerId) return;
+  if (!currentUser?._id || !partnerId) return;
 
-    const joinRoom = () => {
-      setConnected(true);
-      socket.emit("joinChat", {
-        userId: currentUser._id,
-        partnerId,
-      });
-    };
+  const joinRoom = () => {
+    setConnected(socket.connected);
+    socket.emit("joinChat", { partnerId });
+  };
 
-    const handleDisconnect = () => setConnected(false);
+  const handleDisconnect = () => setConnected(false);
 
-    const handleReceiveMessage = (newMessage) => {
-      setMessages((previous) => {
-        if (
-          newMessage._id &&
-          previous.some((item) => item._id === newMessage._id)
-        ) {
-          return previous;
-        }
+  const handleConnectError = (error) => {
+  setConnected(false);
+  setError("Chat authentication failed. Please login again.");
+};
 
-        return [...previous, newMessage];
-      });
-    };
+  const handleReceiveMessage = (newMessage) => {
+    setMessages((previous) => {
+      if (
+        newMessage._id &&
+        previous.some((item) => item._id === newMessage._id)
+      ) {
+        return previous;
+      }
 
-    socket.on("connect", joinRoom);
-    socket.on("disconnect", handleDisconnect);
-    socket.on("receiveMessage", handleReceiveMessage);
+      return [...previous, newMessage];
+    });
+  };
 
-    if (socket.connected) joinRoom();
+  socket.auth = {
+    token: localStorage.getItem("token"),
+  };
 
-    return () => {
-      socket.off("connect", joinRoom);
-      socket.off("disconnect", handleDisconnect);
-      socket.off("receiveMessage", handleReceiveMessage);
-    };
-  }, [currentUser?._id, partnerId]);
+  socket.on("connect", joinRoom);
+  socket.on("disconnect", handleDisconnect);
+  socket.on("connect_error", handleConnectError);
+  socket.on("receiveMessage", handleReceiveMessage);
+
+  socket.connect();
+
+  if (socket.connected) joinRoom();
+
+  return () => {
+    socket.off("connect", joinRoom);
+    socket.off("disconnect", handleDisconnect);
+    socket.off("connect_error", handleConnectError);
+    socket.off("receiveMessage", handleReceiveMessage);
+    socket.disconnect();
+  };
+}, [currentUser?._id, partnerId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -107,7 +118,6 @@ function Chat() {
     }
 
     socket.emit("sendMessage", {
-      sender: currentUser._id,
       receiver: partnerId,
       message: message.trim(),
     });

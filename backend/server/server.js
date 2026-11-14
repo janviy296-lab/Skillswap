@@ -1,45 +1,106 @@
 import "dotenv/config";
 import express from "express";
-import {createServer} from "http";
-import {Server} from "socket.io"
+import { createServer } from "http";
+import { Server } from "socket.io";
+import jwt from "jsonwebtoken";
+import cors from "cors";
+
 import connectDB from "./config/dbConfig.js";
-import authRoutes from "./routes/authRoutes.js"
-import userRoutes from "./routes/userRoutes.js"
-import skillRoutes from "./routes/skillRoutes.js"
-import aiRoutes from "./routes/aiRoutes.js"
-import cors from "cors"
-import assessmentRoutes from "./routes/assessmentRoutes.js"
-import progressRoutes from "./routes/progressRoutes.js"
-import reviewRoutes from "./routes/reviewRoutes.js"
-import sessionRoutes from "./routes/sessionRoutes.js"
+import User from "./models/userModel.js";
 import Message from "./models/messageModel.js";
-import messageRoutes from "./routes/messageRoutes.js"
+
+import authRoutes from "./routes/authRoutes.js";
+import userRoutes from "./routes/userRoutes.js";
+import skillRoutes from "./routes/skillRoutes.js";
+import aiRoutes from "./routes/aiRoutes.js";
+import assessmentRoutes from "./routes/assessmentRoutes.js";
+import progressRoutes from "./routes/progressRoutes.js";
+import reviewRoutes from "./routes/reviewRoutes.js";
+import sessionRoutes from "./routes/sessionRoutes.js";
+import messageRoutes from "./routes/messageRoutes.js";
 
 const app = express();
- const server = createServer(app);
+const server = createServer(app);
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  process.env.CLIENT_URL
+].filter(Boolean).flatMap((origin) => origin.split(",").map((item) => item.trim()));
+
+app.use(cors({
+  origin: allowedOrigins,
+  methods: ["GET", "POST", "PUT", "DELETE"],
+}));
+
+app.use(express.json());
 
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
   },
 });
+
+// Socket.IO JWT authentication
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+
+    if (!token) {
+      return next(new Error("Authentication required"));
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return next(new Error("User not found"));
+    }
+
+    socket.data.userId = String(user._id);
+    next();
+  } catch (error) {
+    next(new Error("Invalid or expired token"));
+  }
+});
+
 io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
+  console.log("Authenticated user connected:", socket.data.userId);
 
-  socket.on("joinChat", ({ userId, partnerId }) => {
-    if (!userId || !partnerId || userId === partnerId) return;
+  socket.data.chatPartners = new Set();
 
-    const roomId = [userId, partnerId].sort().join("_");
-    socket.join(roomId);
+  socket.on("joinChat", async ({ partnerId } = {}) => {
+    try {
+      const userId = socket.data.userId;
+
+      if (!partnerId || partnerId === userId) return;
+
+      const partner = await User.findById(partnerId);
+
+      if (!partner) return;
+
+      const roomId = [userId, String(partner._id)].sort().join("_");
+
+      await socket.join(roomId);
+      socket.data.chatPartners.add(String(partner._id));
+    } catch (error) {
+      console.log("Join chat error:", error.message);
+    }
   });
 
-  socket.on("sendMessage", async (data) => {
+  socket.on("sendMessage", async (data = {}) => {
     try {
-      const { sender, receiver, message } = data;
+      const sender = socket.data.userId;
+      const { receiver, message } = data;
 
-      if (!sender || !receiver || !message?.trim()) return;
+      if (!receiver || !message?.trim()) return;
       if (sender === receiver) return;
+
+      // User must have joined this conversation first
+      if (!socket.data.chatPartners.has(String(receiver))) return;
+
+      const partner = await User.findById(receiver);
+      if (!partner) return;
 
       const newMessage = await Message.create({
         sender,
@@ -47,7 +108,7 @@ io.on("connection", (socket) => {
         message: message.trim(),
       });
 
-      const roomId = [sender, receiver].sort().join("_");
+      const roomId = [sender, String(partner._id)].sort().join("_");
 
       io.to(roomId).emit("receiveMessage", newMessage);
     } catch (error) {
@@ -56,47 +117,27 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    console.log("User disconnected:", socket.id);
+    console.log("User disconnected:", socket.data.userId);
   });
 });
-app.use (cors())
-
-const PORT = process.env.PORT || 5000;
-
-app.use(express.json());
 
 connectDB();
 
-//register user
-app.use("/api/auth" , authRoutes)
-
-//login user
-app.use("/api/users" , userRoutes)
-
-//skill routes
-app.use("/api/skills" , skillRoutes)
-
-//ai Routes
-app.use("/api/ai", aiRoutes)
-
-//assessment Routes
-app.use("/api/ai/assessment", assessmentRoutes)
-
-//progress Routes
-app.use("/api/progress", progressRoutes)
-
-//review Routes
-app.use("/api/reviews", reviewRoutes)
-
-// session Routes
-app.use("/api/sessions", sessionRoutes)
-
-//message Routes
-app.use("/api/messages", messageRoutes)
+app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/skills", skillRoutes);
+app.use("/api/ai", aiRoutes);
+app.use("/api/ai/assessment", assessmentRoutes);
+app.use("/api/progress", progressRoutes);
+app.use("/api/reviews", reviewRoutes);
+app.use("/api/sessions", sessionRoutes);
+app.use("/api/messages", messageRoutes);
 
 app.get("/", (req, res) => {
   res.send("SkillSwap Backend is Running");
 });
+
+const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);

@@ -1,6 +1,7 @@
 import { io } from "socket.io-client";
 
 const socket = io("https://skillswap-ts6q.onrender.com", {
+  autoConnect: false,
   transports: ["websocket", "polling"],
   reconnection: true,
   reconnectionAttempts: 10,
